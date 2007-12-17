@@ -10,7 +10,6 @@ Patch1:		patch-2.5.8-sigsegv.patch
 Patch2:		patch-2.5.4-unreadable_to_readable.patch
 Patch3:		patch-2.5.8-stderr.patch
 Patch5:		patch-2.5.4-destdir.patch
-Buildroot:	%{_tmppath}/%{name}-%{version}-buildroot
 
 %description
 The patch program applies diff files to originals.  The diff command
