@@ -1,7 +1,7 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
 Version:	2.5.9
-Release:	%mkrel 5
+Release:	%mkrel 6
 License:	GPL
 Group:		Text tools
 URL:		http://www.gnu.org/directory/GNU/patch.html
