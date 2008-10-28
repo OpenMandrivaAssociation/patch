@@ -36,16 +36,8 @@ applications.
 %patch101 -p1
 
 %build
-# (fg) Large file support can be disabled from ./configure - it is necessary at
-# least on sparcs
-%ifnarch sparc sparc64 alpha
 %configure 
-%else
-%configure --disable-largefile
-%endif
-
-make "CFLAGS=%{optflags} -D_GNU_SOURCE -W -Wall" LDFLAGS=-s
-
+%make
 
 %install
 [ "%{buildroot}" != "/" ] && rm -rf %{buildroot}
