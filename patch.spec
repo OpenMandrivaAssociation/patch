@@ -10,6 +10,9 @@ Patch1:		patch-2.5.8-sigsegv.patch
 Patch2:		patch-2.5.4-unreadable_to_readable.patch
 Patch3:		patch-2.5.8-stderr.patch
 Patch5:		patch-2.5.4-destdir.patch
+# debian patches:
+Patch100:	10_unified-reject-files.patch
+Patch101:	20_global-reject-file.patch
 Buildroot:	%{_tmppath}/%{name}-%{version}-buildroot
 
 %description
@@ -28,6 +31,9 @@ applications.
 %patch2 -p1
 %patch3 -p1
 %patch5 -p1
+
+%patch100 -p1
+%patch101 -p1
 
 %build
 # (fg) Large file support can be disabled from ./configure - it is necessary at
