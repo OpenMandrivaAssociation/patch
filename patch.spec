@@ -1,19 +1,17 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
-Version:	2.5.9
-Release:	%mkrel 9
+Version:	2.6
+Release:	%mkrel 1
 License:	GPL
 Group:		Text tools
 URL:		http://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://alpha.gnu.org/gnu/patch/%{name}-%{version}.tar.bz2
-Patch1:		patch-2.5.8-sigsegv.patch
-Patch2:		patch-2.5.4-unreadable_to_readable.patch
-Patch3:		patch-2.5.8-stderr.patch
-Patch5:		patch-2.5.4-destdir.patch
-Patch6:		patch-2.5.9-format_not_a_string_literal_and_no_format_arguments.diff
+Patch1:		patch-2.6-sigsegv.patch
+Patch3:		patch-2.6-stderr.patch
+Patch6:		patch-2.6-format_not_a_string_literal_and_no_format_arguments.diff
+Patch7:		buildfix.diff
 # debian patches:
-Patch100:	10_unified-reject-files.patch
-Patch101:	20_global-reject-file.patch
+Patch103:	lenny-options.diff
 BuildRoot:	%{_tmppath}/%{name}-%{version}-%{release}-buildroot
 
 %description
@@ -30,13 +28,11 @@ applications.
 %setup -q
 
 %patch1 -p1 -b .sigsegv
-%patch2 -p1 -b .unreadable_to_readable
 %patch3 -p1 -b .stderr
-%patch5 -p1 -b .destdir
 %patch6 -p0 -b .format_not_a_string_literal_and_no_format_arguments
+%patch7 -p0 -b .buildfix
 
-%patch100 -p1 -b .unified-reject-files
-%patch101 -p1 -b .global-reject-file
+%patch103 -p1 -b .compat-options
 
 %build
 %configure 
