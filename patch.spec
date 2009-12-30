@@ -1,6 +1,6 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
-Version:	2.6
+Version:	2.6.1
 Release:	%mkrel 1
 License:	GPL
 Group:		Text tools
