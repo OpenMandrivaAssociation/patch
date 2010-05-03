@@ -1,14 +1,14 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
 Version:	2.6.1
-Release:	%mkrel 1
-License:	GPL
+Release:	%mkrel 2
+License:	GPLv3
 Group:		Text tools
 URL:		http://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://alpha.gnu.org/gnu/patch/%{name}-%{version}.tar.bz2
 Patch1:		patch-2.6-sigsegv.patch
 Patch3:		patch-2.6-stderr.patch
-Patch6:		patch-2.6-format_not_a_string_literal_and_no_format_arguments.diff
+Patch6:		patch-2.6-fix-str-fmt.patch
 Patch7:		buildfix.diff
 # debian patches:
 Patch103:	lenny-options.diff
