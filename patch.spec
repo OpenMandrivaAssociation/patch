@@ -1,11 +1,11 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
 Version:	2.6.1
-Release:	%mkrel 2
+Release:	%mkrel 3
 License:	GPLv3
 Group:		Text tools
 URL:		http://www.gnu.org/directory/GNU/patch.html
-Source0:	ftp://alpha.gnu.org/gnu/patch/%{name}-%{version}.tar.bz2
+Source0:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.bz2
 Patch1:		patch-2.6-sigsegv.patch
 Patch3:		patch-2.6-stderr.patch
 Patch6:		patch-2.6-fix-str-fmt.patch
@@ -31,16 +31,14 @@ applications.
 %patch3 -p1 -b .stderr
 %patch6 -p0 -b .format_not_a_string_literal_and_no_format_arguments
 %patch7 -p0 -b .buildfix
-
 %patch103 -p1 -b .compat-options
 
 %build
-%configure 
+%configure2_5x
 %make
 
 %install
 rm -rf %{buildroot}
-
 %makeinstall
 
 %clean
