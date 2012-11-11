@@ -1,0 +1,42 @@
+diff -Naurp patch-2.5.9/inp.c patch-2.5.9.oden/inp.c
+--- patch-2.5.9/src/inp.c	2003-05-20 15:58:02.000000000 +0200
++++ patch-2.5.9.oden/src/inp.c	2008-12-22 13:46:42.000000000 +0100
+@@ -79,6 +79,14 @@ re_input (void)
+     }
+ }
+ 
++void
++reset_scan_input_vars()
++{
++ using_plan_a = 1;
++ i_buffer = NULL;
++ i_ptr = NULL;
++}
++
+ /* Construct the line index, somehow or other. */
+ 
+ void
+diff -Naurp patch-2.5.9/inp.h patch-2.5.9.oden/inp.h
+--- patch-2.5.9/src/inp.h	2003-05-20 16:05:22.000000000 +0200
++++ patch-2.5.9.oden/src/inp.h	2008-12-22 13:46:42.000000000 +0100
+@@ -26,4 +26,5 @@ XTERN LINENUM input_lines;		/* how long 
+ char const *ifetch (LINENUM, bool, size_t *);
+ void get_input_file (char const *, char const *);
+ void re_input (void);
++void reset_scan_input_vars PARAMS (());
+ void scan_input (char *);
+diff -Naurp patch-2.5.9/patch.c patch-2.5.9.oden/patch.c
+--- patch-2.5.9/src/patch.c	2003-05-20 15:55:03.000000000 +0200
++++ patch-2.5.9.oden/src/patch.c	2008-12-22 13:46:42.000000000 +0100
+@@ -213,7 +213,10 @@ main (int argc, char **argv)
+ 
+ 	/* find out where all the lines are */
+ 	if (!skip_rest_of_patch)
+-	    scan_input (inname);
++          scan_input (inname);
++        else
++          reset_scan_input_vars ();
++        
+ 
+ 	/* from here on, open no standard i/o files, because malloc */
+ 	/* might misfire and we can't catch it easily */

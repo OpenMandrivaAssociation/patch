@@ -1,0 +1,86 @@
+patch (2.6-1) unstable; urgency=low
+
+  The patch versions shipped in Debian Etch and Lenny (2.5.9-4 and 2.5.9-5)
+  contained two patches that would create reject files in unified format, and
+  collect all rejects in a single, "global" reject file. These patches are now
+  part of patch 2.6.
+
+  However, the arguments have been renamed:
+
+   * -U or --unified-reject-files  is now  --reject-format=format.
+     Additionally, reject files will automatically be in unified format if the
+     input patch is in that format.
+
+   * --global-reject-file=file  is now a synonym for  --reject-file=file (-r)
+     which has been fixed not to overwrite reject hunks from different files.
+
+  The old syntax is still supported, but will be removed for the Debian
+  release following Squeeze.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 30 Nov 2009 14:01:54 +0100
+--- a/src/patch.c
++++ b/src/patch.c
+@@ -527,7 +527,7 @@ static char const shortopts[] = "bB:cd:D
+ #if 0 && defined(ENABLE_MERGE)
+ 				"m"
+ #endif
+-				"nNo:p:r:RstTuvV:x:Y:z:Z";
++				"nNo:p:r:RstTuUvV:x:Y:z:Z";
+ 
+ static struct option const longopts[] =
+ {
+@@ -551,6 +551,7 @@ static struct option const longopts[] =
+   {"output", required_argument, NULL, 'o'},
+   {"strip", required_argument, NULL, 'p'},
+   {"reject-file", required_argument, NULL, 'r'},
++  {"global-reject-file", required_argument, NULL, 'r'}, /* Debian etch/lenny compatibility */
+   {"reverse", no_argument, NULL, 'R'},
+   {"quiet", no_argument, NULL, 's'},
+   {"silent", no_argument, NULL, 's'},
+@@ -572,6 +573,7 @@ static struct option const longopts[] =
+   {"posix", no_argument, NULL, CHAR_MAX + 7},
+   {"quoting-style", required_argument, NULL, CHAR_MAX + 8},
+   {"reject-format", required_argument, NULL, CHAR_MAX + 9},
++  {"unified-reject-files", no_argument, NULL, 'U'}, /* Debian etch/lenny compatibility */
+   {NULL, no_argument, NULL, 0}
+ };
+ 
+@@ -771,6 +773,9 @@ get_some_switches (void)
+ 	    case 'u':
+ 		diff_type = UNI_DIFF;
+ 		break;
++	    case 'U': /* Debian etch/lenny compatibility */
++		reject_format = UNI_DIFF;
++		break;
+ 	    case 'v':
+ 		version();
+ 		exit (0);
+--- a/patch.man
++++ b/patch.man
+@@ -550,6 +550,11 @@ instead of the default
+ .B \&.rej
+ file.  When \fIrejectfile\fP is \fB\-\fP, discard rejects.
+ .TP
++.BI \*=global\-reject\-file= rejectfile
++Same as
++\fB\*=reject\-file=\fP\fIrejectfile\fP.  This option is deprecated and is a
++Debian-specific extension that will be removed in a future release.
++.TP
+ \fB\-R\fP  or  \fB\*=reverse\fP
+ Assume that this patch was created with the old and new files swapped.
+ (Yes, I'm afraid that does happen occasionally, human nature being what it
+@@ -585,6 +590,14 @@ Produce reject files in the specified \f
+ format if the input patch was of that format, otherwise in ordinary context
+ diff form.
+ .TP
++\fB\-U\fP  or  \fB\*=unified\-reject\-files\fP
++Produce unified reject files.
++.BR
++This option is deprecated and is a Debian-specific extension that will be
++removed in a future release.  Use
++\fB\*=reject\-format=\fP\fIformat\fP
++instead.
++.TP
+ \fB\-s\fP  or  \fB\*=silent\fP  or  \fB\*=quiet\fP
+ Work silently, unless an error occurs.
+ .TP
