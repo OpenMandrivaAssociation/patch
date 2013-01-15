@@ -1,0 +1,39 @@
+diff -uNrp patch-2.7.sigsegv/src/inp.c patch-2.7/src/inp.c
+--- patch-2.7.sigsegv/src/inp.c	2012-08-07 15:46:33.000000000 -0400
++++ patch-2.7/src/inp.c	2012-09-15 14:35:36.713245746 -0400
+@@ -74,6 +74,14 @@ re_input (void)
+     }
+ }
+ 
++void
++reset_scan_input_vars()
++{
++ using_plan_a = 1;
++ i_buffer = NULL;
++ i_ptr = NULL;
++}
++
+ /* Construct the line index, somehow or other. */
+ 
+ void
+diff -uNrp patch-2.7.sigsegv/src/inp.h patch-2.7/src/inp.h
+--- patch-2.7.sigsegv/src/inp.h	2012-08-07 15:46:33.000000000 -0400
++++ patch-2.7/src/inp.h	2012-09-15 14:35:36.713245746 -0400
+@@ -22,4 +22,5 @@ XTERN lin input_lines;		/* how long is i
+ char const *ifetch (lin, bool, size_t *);
+ bool get_input_file (char const *, char const *, mode_t);
+ void re_input (void);
++void reset_scan_input_vars ();
+ void scan_input (char *, mode_t);
+diff -uNrp patch-2.7.sigsegv/src/patch.c patch-2.7/src/patch.c
+--- patch-2.7.sigsegv/src/patch.c	2012-08-08 07:24:46.000000000 -0400
++++ patch-2.7/src/patch.c	2012-09-15 14:35:56.138714308 -0400
+@@ -351,6 +351,8 @@ main (int argc, char **argv)
+ 		  say ("Using Plan %s...\n", using_plan_a ? "A" : "B");
+ 	      }
+ 	}
++	else
++	    reset_scan_input_vars ();
+ 
+ 	/* from here on, open no standard i/o files, because malloc */
+ 	/* might misfire and we can't catch it easily */

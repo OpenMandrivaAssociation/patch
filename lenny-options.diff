@@ -18,46 +18,10 @@ patch (2.6-1) unstable; urgency=low
   release following Squeeze.
 
  -- Christoph Berg <myon@debian.org>  Mon, 30 Nov 2009 14:01:54 +0100
---- a/src/patch.c
-+++ b/src/patch.c
-@@ -527,7 +527,7 @@ static char const shortopts[] = "bB:cd:D
- #if 0 && defined(ENABLE_MERGE)
- 				"m"
- #endif
--				"nNo:p:r:RstTuvV:x:Y:z:Z";
-+				"nNo:p:r:RstTuUvV:x:Y:z:Z";
- 
- static struct option const longopts[] =
- {
-@@ -551,6 +551,7 @@ static struct option const longopts[] =
-   {"output", required_argument, NULL, 'o'},
-   {"strip", required_argument, NULL, 'p'},
-   {"reject-file", required_argument, NULL, 'r'},
-+  {"global-reject-file", required_argument, NULL, 'r'}, /* Debian etch/lenny compatibility */
-   {"reverse", no_argument, NULL, 'R'},
-   {"quiet", no_argument, NULL, 's'},
-   {"silent", no_argument, NULL, 's'},
-@@ -572,6 +573,7 @@ static struct option const longopts[] =
-   {"posix", no_argument, NULL, CHAR_MAX + 7},
-   {"quoting-style", required_argument, NULL, CHAR_MAX + 8},
-   {"reject-format", required_argument, NULL, CHAR_MAX + 9},
-+  {"unified-reject-files", no_argument, NULL, 'U'}, /* Debian etch/lenny compatibility */
-   {NULL, no_argument, NULL, 0}
- };
- 
-@@ -771,6 +773,9 @@ get_some_switches (void)
- 	    case 'u':
- 		diff_type = UNI_DIFF;
- 		break;
-+	    case 'U': /* Debian etch/lenny compatibility */
-+		reject_format = UNI_DIFF;
-+		break;
- 	    case 'v':
- 		version();
- 		exit (0);
---- a/patch.man
-+++ b/patch.man
-@@ -550,6 +550,11 @@ instead of the default
+diff -uNrp patch-2.7.1.debian/patch.man patch-2.7.1/patch.man
+--- patch-2.7.1.debian/patch.man	2012-04-17 16:13:36.000000000 -0400
++++ patch-2.7.1/patch.man	2012-09-15 14:25:34.447754183 -0400
+@@ -562,6 +562,11 @@ instead of the default
  .B \&.rej
  file.  When \fIrejectfile\fP is \fB\-\fP, discard rejects.
  .TP
@@ -69,7 +33,7 @@ patch (2.6-1) unstable; urgency=low
  \fB\-R\fP  or  \fB\*=reverse\fP
  Assume that this patch was created with the old and new files swapped.
  (Yes, I'm afraid that does happen occasionally, human nature being what it
-@@ -585,6 +590,14 @@ Produce reject files in the specified \f
+@@ -597,6 +602,14 @@ Produce reject files in the specified \f
  format if the input patch was of that format, otherwise in ordinary context
  diff form.
  .TP
@@ -84,3 +48,41 @@ patch (2.6-1) unstable; urgency=low
  \fB\-s\fP  or  \fB\*=silent\fP  or  \fB\*=quiet\fP
  Work silently, unless an error occurs.
  .TP
+diff -uNrp patch-2.7.1.debian/src/patch.c patch-2.7.1/src/patch.c
+--- patch-2.7.1.debian/src/patch.c	2012-08-08 07:24:46.000000000 -0400
++++ patch-2.7.1/src/patch.c	2012-09-15 14:22:36.642568730 -0400
+@@ -674,7 +674,7 @@ static char const shortopts[] = "bB:cd:D
+ #if 0 && defined ENABLE_MERGE
+ 				"m"
+ #endif
+-				"nNo:p:r:RstTuvV:x:Y:z:Z";
++				"nNo:p:r:RstTuUvV:x:Y:z:Z";
+ 
+ static struct option const longopts[] =
+ {
+@@ -698,6 +698,7 @@ static struct option const longopts[] =
+   {"output", required_argument, NULL, 'o'},
+   {"strip", required_argument, NULL, 'p'},
+   {"reject-file", required_argument, NULL, 'r'},
++  {"global-reject-file", required_argument, NULL, 'r'}, /* Debian etc/lenny compatibility */
+   {"reverse", no_argument, NULL, 'R'},
+   {"quiet", no_argument, NULL, 's'},
+   {"silent", no_argument, NULL, 's'},
+@@ -719,6 +720,7 @@ static struct option const longopts[] =
+   {"posix", no_argument, NULL, CHAR_MAX + 7},
+   {"quoting-style", required_argument, NULL, CHAR_MAX + 8},
+   {"reject-format", required_argument, NULL, CHAR_MAX + 9},
++  {"unified-reject-files", no_argument, NULL, 'U'}, /* Debian etch/lenny compatibility */
+   {"read-only", required_argument, NULL, CHAR_MAX + 10},
+   {"follow-symlinks", no_argument, NULL, CHAR_MAX + 11},
+   {NULL, no_argument, NULL, 0}
+@@ -931,6 +933,9 @@ get_some_switches (void)
+ 	    case 'u':
+ 		diff_type = UNI_DIFF;
+ 		break;
++	    case 'U': /* Debian etch/lenny compatibility */
++		reject_format = UNI_DIFF;
++		break;
+ 	    case 'v':
+ 		version();
+ 		exit (0);
