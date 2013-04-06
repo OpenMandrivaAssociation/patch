@@ -10,6 +10,7 @@ Source1:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz.sig
 Patch3:		patch-2.6-stderr.patch
 Patch6:		patch-2.6-fix-str-fmt.patch
 Patch7:		patch-remove-empty-dir.patch
+Patch8:		patch-2.7.1-fix-segfault-in-parsing-of-incorrect-args.patch
 # debian patches:
 Patch103:	lenny-options.diff
 BuildRequires:	attr-devel
@@ -29,6 +30,7 @@ applications.
 %patch3 -p1 -b .stderr
 %patch6 -p0 -b .format_not_a_string_literal_and_no_format_arguments
 %patch7 -p1 -b .emptydir~
+%patch8 -p1 -b .segfault~
 %patch103 -p1 -b .compat-options
 
 %build

@@ -1,0 +1,11 @@
+--- patch-2.7.1/src/patch.c~	2013-04-06 04:49:21.886858712 +0200
++++ patch-2.7.1/src/patch.c	2013-04-06 04:49:23.133543936 +0200
+@@ -1937,6 +1937,8 @@ output_files (struct stat const *st)
+ static void
+ forget_output_files (void)
+ {
++  if (files_to_output == NULL)
++	  return;
+   gl_list_iterator_t iter = gl_list_iterator (files_to_output);
+   const void *elt;
+ 
