@@ -13,6 +13,7 @@ Patch6:		patch-2.6-fix-str-fmt.patch
 Patch7:		patch-remove-empty-dir.patch
 # debian patches:
 Patch103:	lenny-options.diff
+BuildRequires:	attr-devel
 
 %description
 The patch program applies diff files to originals.  The diff command
