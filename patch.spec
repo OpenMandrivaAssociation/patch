@@ -7,7 +7,6 @@ Group:		Text tools
 URL:		http://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz
 Source1:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz.sig
-Patch1:		patch-2.7-sigsegv.patch
 Patch3:		patch-2.6-stderr.patch
 Patch6:		patch-2.6-fix-str-fmt.patch
 Patch7:		patch-remove-empty-dir.patch
@@ -27,8 +26,6 @@ applications.
 
 %prep
 %setup -q
-
-%patch1 -p1 -b .sigsegv
 %patch3 -p1 -b .stderr
 %patch6 -p0 -b .format_not_a_string_literal_and_no_format_arguments
 %patch7 -p1 -b .emptydir~
