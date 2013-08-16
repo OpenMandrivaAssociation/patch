@@ -4,7 +4,7 @@ Version:	2.7.1
 Release:	2
 License:	GPLv3
 Group:		Text tools
-URL:		http://www.gnu.org/directory/GNU/patch.html
+Url:		http://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz
 Source1:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz.sig
 Patch3:		patch-2.6-stderr.patch
@@ -27,11 +27,7 @@ applications.
 
 %prep
 %setup -q
-%patch3 -p1 -b .stderr
-%patch6 -p0 -b .format_not_a_string_literal_and_no_format_arguments
-%patch7 -p1 -b .emptydir~
-%patch8 -p1 -b .segfault~
-%patch103 -p1 -b .compat-options
+%apply_patches
 
 %build
 %configure2_5x
@@ -43,4 +39,5 @@ applications.
 %files
 %doc NEWS README AUTHORS ChangeLog
 %{_bindir}/*
-%{_mandir}/*/*
+%{_mandir}/man1/*
+
