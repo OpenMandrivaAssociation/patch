@@ -1,7 +1,7 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
 Version:	2.7.1
-Release:	7
+Release:	8
 License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/directory/GNU/patch.html
