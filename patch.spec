@@ -1,12 +1,11 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
-Version:	2.7.2
+Version:	2.7.3
 Release:	1
 License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz
-Source1:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz.sig
 Patch3:		patch-2.6-stderr.patch
 Patch6:		patch-2.6-fix-str-fmt.patch
 Patch8:		patch-2.7.1-fix-segfault-in-parsing-of-incorrect-args.patch
@@ -29,7 +28,7 @@ applications.
 %apply_patches
 
 %build
-%configure2_5x
+%configure
 %make
 
 %install
