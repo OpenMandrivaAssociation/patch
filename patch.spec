@@ -1,6 +1,6 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
-Version:	2.7.3
+Version:	2.7.4
 Release:	1
 License:	GPLv3
 Group:		Text tools
