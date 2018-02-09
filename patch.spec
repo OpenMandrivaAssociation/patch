@@ -8,7 +8,6 @@ Url:		http://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz
 Patch3:		patch-2.6-stderr.patch
 Patch6:		patch-2.6-fix-str-fmt.patch
-Patch8:		patch-2.7.1-fix-segfault-in-parsing-of-incorrect-args.patch
 # debian patches:
 Patch103:	lenny-options.diff
 BuildRequires:	attr-devel
