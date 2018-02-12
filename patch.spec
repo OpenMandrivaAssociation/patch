@@ -6,8 +6,9 @@ License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz
-Patch3:		patch-2.6-stderr.patch
-Patch6:		patch-2.6-fix-str-fmt.patch
+Patch1:		patch-2.6-stderr.patch
+Patch2:		patch-2.6-fix-str-fmt.patch
+Patch3:		patch-2.7.6-check-for-__builtin_mul_overflow_p.patch
 # debian patches:
 Patch103:	lenny-options.diff
 BuildRequires:	attr-devel

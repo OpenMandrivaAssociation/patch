@@ -1,0 +1,34 @@
+diff -Naur patch-2.7.6/configure.ac patch-2.7.6.tpg/configure.ac
+--- patch-2.7.6/configure.ac	2018-02-03 12:41:49.000000000 +0000
++++ patch-2.7.6.tpg/configure.ac	2018-02-12 00:05:11.649022974 +0000
+@@ -38,6 +38,18 @@
+ 
+ AC_CONFIG_HEADERS([config.h:config.hin])
+ 
++AC_CACHE_CHECK([for gcc 7-compatible __builtin_mul_overflow_p],
++  [utils_cv_builtin_mul_overflow_p],
++  [AC_COMPILE_IFELSE(
++    [AC_LANG_PROGRAM(
++      [[]],
++      [[return __builtin_mul_overflow_p(1, 2, 3);]])],
++    [utils_cv_builtin_mul_overflow_p=yes],
++    [utils_cv_builtin_mul_overflow_p=no])])
++if test $utils_cv_builtin_mul_overflow_p = yes; then
++  AC_DEFINE([HAVE_BUILTIN_MUL_OVERFLOW_P], [1], [Define if your compiler supports __builtin_mul_overflow_p])
++fi
++
+ AC_PROG_CC
+ AC_PROG_CC_STDC
+ gl_EARLY
+diff -Naur patch-2.7.6/lib/xalloc-oversized.h patch-2.7.6.tpg/lib/xalloc-oversized.h
+--- patch-2.7.6/lib/xalloc-oversized.h	2018-02-03 12:41:53.000000000 +0000
++++ patch-2.7.6.tpg/lib/xalloc-oversized.h	2018-02-12 00:10:08.746263111 +0000
+@@ -41,7 +41,7 @@
+    positive and N must be nonnegative.  This is a macro, not a
+    function, so that it works correctly even when SIZE_MAX < N.  */
+ 
+-#if 7 <= __GNUC__
++#ifdef HAVE_BUILTIN_MUL_OVERFLOW_P
+ # define xalloc_oversized(n, s) \
+    __builtin_mul_overflow_p (n, s, (__xalloc_count_type) 1)
+ #elif 5 <= __GNUC__ && !defined __ICC && !__STRICT_ANSI__
