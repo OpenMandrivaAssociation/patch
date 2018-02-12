@@ -28,6 +28,11 @@ applications.
 %apply_patches
 
 %build
+# (tpg) fix error
+# make[2]: Leaving directory '/builddir/build/BUILD/patch-2.7.6/src'
+# /tmp/lto-llvm-e141f0.o:ld-temp.o:function compute_bucket_size: error: undefined reference to '__muloti4'
+%global optflags %{optflags} --rtlib=compiler-rt
+
 %configure
 %make
 
