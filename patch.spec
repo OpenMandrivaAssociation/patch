@@ -1,7 +1,7 @@
 Summary:	The GNU patch command, for modifying/upgrading files
 Name:		patch
 Version:	2.7.6
-Release:	1
+Release:	2
 License:	GPLv3
 Group:		Text tools
 Url:		http://www.gnu.org/directory/GNU/patch.html
@@ -24,8 +24,7 @@ Patch should be installed because it is a common way of upgrading
 applications.
 
 %prep
-%setup -q
-%apply_patches
+%autosetup -p1
 
 %build
 # (tpg) fix error
@@ -34,10 +33,10 @@ applications.
 %global optflags %{optflags} --rtlib=compiler-rt
 
 %configure
-%make
+%make_build
 
 %install
-%makeinstall
+%make_install
 
 %files
 %doc NEWS README AUTHORS ChangeLog
