@@ -4,7 +4,7 @@ Version:	2.7.6
 Release:	4
 License:	GPLv3
 Group:		Text tools
-Url:		http://www.gnu.org/directory/GNU/patch.html
+Url:		https://www.gnu.org/directory/GNU/patch.html
 Source0:	ftp://ftp.gnu.org/gnu/patch/%{name}-%{version}.tar.xz
 Patch1:		patch-2.6-stderr.patch
 Patch2:		patch-2.6-fix-str-fmt.patch
