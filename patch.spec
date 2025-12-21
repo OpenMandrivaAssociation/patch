@@ -11,6 +11,11 @@ Source0:	https://ftp.gnu.org/pub/gnu/patch/%{name}-%{version}.tar.xz
 #Patch3:		patch-2.7.6-check-for-__builtin_mul_overflow_p.patch
 # debian patches:
 #Patch103:	lenny-options.diff
+BuildRequires:	autoconf
+BuildRequires:	automake
+BuildRequires:	libtool-base
+BuildRequires:	slibtool
+BuildRequires:	make
 BuildRequires:	attr-devel
 
 %description
