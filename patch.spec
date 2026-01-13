@@ -11,11 +11,7 @@ Source0:	https://ftp.gnu.org/pub/gnu/patch/%{name}-%{version}.tar.xz
 #Patch3:		patch-2.7.6-check-for-__builtin_mul_overflow_p.patch
 # debian patches:
 #Patch103:	lenny-options.diff
-BuildRequires:	autoconf
-BuildRequires:	automake
-BuildRequires:	libtool-base
-BuildRequires:	slibtool
-BuildRequires:	make
+BuildSystem:	autotools
 BuildRequires:	attr-devel
 
 %description
@@ -27,23 +23,6 @@ original file (patching the file).
 
 Patch should be installed because it is a common way of upgrading
 applications.
-
-%prep
-%autosetup -p1
-
-%build
-# (tpg) fix error
-# make[2]: Leaving directory '/builddir/build/BUILD/patch-2.7.6/src'
-# /tmp/lto-llvm-e141f0.o:ld-temp.o:function compute_bucket_size: error: undefined reference to '__muloti4'
-%ifnarch riscv64
-%global optflags %{optflags} --rtlib=compiler-rt
-%endif
-
-%configure
-%make_build
-
-%install
-%make_install
 
 %files
 %doc NEWS README AUTHORS ChangeLog
