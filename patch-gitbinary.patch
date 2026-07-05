@@ -1,0 +1,1411 @@
+diff --git a/configure.ac b/configure.ac
+index 542c816..f61fc0b 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -110,6 +110,13 @@ AC_TYPE_OFF_T
+ 
+ gl_FUNC_XATTR
+ 
++AC_CHECK_LIB([z], [inflate],
++  [],
++  [AC_MSG_ERROR([zlib is required for git binary patch support])])
++AC_CHECK_HEADERS([zlib.h],
++  [],
++  [AC_MSG_ERROR([zlib.h is required for git binary patch support])])
++
+ AC_CHECK_FUNCS_ONCE([geteuid getuid sigaction sigfillset])
+ AC_FUNC_SETMODE_DOS
+ 
+diff --git a/src/Makefile.am b/src/Makefile.am
+index cd0863f..db6e934 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -21,6 +21,8 @@ bin_PROGRAMS = patch
+ patch_SOURCES = \
+ 	bestmatch.h \
+ 	common.h \
++	gitpatch.c \
++	gitpatch.h \
+ 	inp.c \
+ 	inp.h \
+ 	patch.c \
+@@ -38,7 +40,7 @@ AM_CPPFLAGS = -I$(top_builddir)/lib -I$(top_srcdir)/lib
+ patch_LDADD = $(LDADD) $(top_builddir)/lib/libpatch.a \
+  $(CLOCK_TIME_LIB) $(EUIDACCESS_LIBGEN) $(GETRANDOM_LIB) \
+  $(HARD_LOCALE_LIB) $(LIBINTL) $(MBRTOWC_LIB) $(SETLOCALE_NULL_LIB) \
+- $(LIB_XATTR)
++ $(LIB_XATTR) -lz
+ 
+ if ENABLE_MERGE
+   patch_SOURCES += merge.c
+diff --git a/src/gitpatch.c b/src/gitpatch.c
+new file mode 100644
+index 0000000..5bc1a4b
+--- /dev/null
++++ b/src/gitpatch.c
+@@ -0,0 +1,465 @@
++/* git binary patch support for GNU patch */
++
++/* Copyright 2026 Free Software Foundation, Inc.
++
++   This program is free software: you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation, either version 3 of the License, or
++   (at your option) any later version.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
++
++#include <common.h>
++#include <gitpatch.h>
++#include <util.h>
++#include <safe.h>
++#include <xalloc.h>
++#include <quotearg.h>
++#include <pch.h>
++#include <zlib.h>
++
++/* Git's base85 alphabet.  */
++static const char base85_alphabet[] =
++  "0123456789"
++  "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
++  "abcdefghijklmnopqrstuvwxyz"
++  "!#$%&()*+-;<=>?@^_`{|}~";
++
++/* Reverse lookup table for base85 decoding, -1 for invalid.  */
++static signed char base85_decode_tab[256];
++static bool base85_tab_initialized = false;
++
++static void
++init_base85_decode_tab (void)
++{
++  if (base85_tab_initialized)
++    return;
++  memset (base85_decode_tab, -1, sizeof base85_decode_tab);
++  for (int i = 0; i < 85; i++)
++    base85_decode_tab[(unsigned char) base85_alphabet[i]] = i;
++  base85_tab_initialized = true;
++}
++
++/* Decode base85-encoded data.
++   DST must have room for at least LEN bytes.
++   LINE points to the base85-encoded characters (LINE_LEN of them).
++   Returns true on success.  */
++bool
++git_base85_decode (unsigned char *dst, size_t len,
++                   const char *line, size_t line_len)
++{
++  init_base85_decode_tab ();
++
++  size_t dst_pos = 0;
++
++  while (line_len > 0)
++    {
++      /* Need 5 base85 chars to produce 4 bytes (except possibly at end).  */
++      if (line_len < 5)
++        return false;
++
++      unsigned int acc = 0;
++      for (int i = 0; i < 5; i++)
++        {
++          int val = base85_decode_tab[(unsigned char) line[i]];
++          if (val < 0)
++            return false;
++          acc = acc * 85 + val;
++        }
++
++      /* Extract 4 bytes, big-endian.  */
++      unsigned char buf[4];
++      buf[0] = (acc >> 24) & 0xFF;
++      buf[1] = (acc >> 16) & 0xFF;
++      buf[2] = (acc >>  8) & 0xFF;
++      buf[3] = (acc      ) & 0xFF;
++
++      size_t to_copy = len - dst_pos;
++      if (to_copy > 4)
++        to_copy = 4;
++      memcpy (dst + dst_pos, buf, to_copy);
++      dst_pos += to_copy;
++
++      line += 5;
++      line_len -= 5;
++    }
++
++  return dst_pos == len;
++}
++
++/* Decode the length character on a git binary patch data line.
++   Returns the byte count (1..52), or 0 on error.  */
++static size_t
++decode_line_len (char c)
++{
++  if (c >= 'A' && c <= 'Z')
++    return c - 'A' + 1;
++  if (c >= 'a' && c <= 'z')
++    return c - 'a' + 27;
++  return 0;
++}
++
++/* Read a single git binary hunk (either literal or delta).
++   PFP is positioned at the start of the hunk header line
++   (e.g. "literal 1234\n" or "delta 567\n").
++   On success, fills HUNK, advances PFP past the trailing blank line,
++   and returns true.  */
++static bool
++read_binary_hunk (FILE *pfp, struct git_binary_hunk *hunk)
++{
++  char linebuf[4096];
++  if (!fgets (linebuf, sizeof linebuf, pfp))
++    return false;
++
++  /* Parse header: "literal <size>" or "delta <size>".  */
++  size_t result_size;
++  if (strncmp (linebuf, "literal ", 8) == 0)
++    {
++      hunk->type = GIT_BINARY_LITERAL;
++      result_size = strtoul (linebuf + 8, NULL, 10);
++    }
++  else if (strncmp (linebuf, "delta ", 6) == 0)
++    {
++      hunk->type = GIT_BINARY_DELTA;
++      result_size = strtoul (linebuf + 6, NULL, 10);
++    }
++  else
++    return false;
++
++  hunk->result_size = result_size;
++
++  /* Read the base85-encoded, zlib-compressed data lines.
++     Accumulate raw decoded (but still zlib-compressed) bytes.  */
++  size_t raw_alloc = result_size + 256;
++  unsigned char *raw = xmalloc (raw_alloc);
++  size_t raw_len = 0;
++
++  for (;;)
++    {
++      if (!fgets (linebuf, sizeof linebuf, pfp))
++        {
++          free (raw);
++          return false;
++        }
++
++      /* A blank line terminates this hunk.  */
++      if (linebuf[0] == '\n' || (linebuf[0] == '\r' && linebuf[1] == '\n'))
++        break;
++
++      /* Decode length character.  */
++      size_t byte_count = decode_line_len (linebuf[0]);
++      if (byte_count == 0)
++        {
++          free (raw);
++          return false;
++        }
++
++      /* Strip the trailing newline from base85 data.  */
++      size_t b85_len = strlen (linebuf + 1);
++      if (b85_len > 0 && linebuf[1 + b85_len - 1] == '\n')
++        b85_len--;
++      if (b85_len > 0 && linebuf[1 + b85_len - 1] == '\r')
++        b85_len--;
++
++      /* Grow buffer if needed.  */
++      while (raw_len + byte_count > raw_alloc)
++        {
++          raw_alloc *= 2;
++          raw = xrealloc (raw, raw_alloc);
++        }
++
++      if (!git_base85_decode (raw + raw_len, byte_count,
++                              linebuf + 1, b85_len))
++        {
++          free (raw);
++          return false;
++        }
++      raw_len += byte_count;
++    }
++
++  /* Decompress using zlib.  */
++  size_t out_alloc = result_size ? result_size : 1;
++  unsigned char *out = xmalloc (out_alloc);
++
++  z_stream zs;
++  memset (&zs, 0, sizeof zs);
++  zs.next_in = raw;
++  zs.avail_in = raw_len;
++  zs.next_out = out;
++  zs.avail_out = out_alloc;
++
++  if (inflateInit (&zs) != Z_OK)
++    {
++      free (raw);
++      free (out);
++      return false;
++    }
++
++  int ret = inflate (&zs, Z_FINISH);
++  inflateEnd (&zs);
++  free (raw);
++
++  if (ret != Z_STREAM_END)
++    {
++      free (out);
++      return false;
++    }
++
++  hunk->data = out;
++  hunk->data_len = zs.total_out;
++
++  if (hunk->data_len != result_size)
++    {
++      free (out);
++      hunk->data = NULL;
++      hunk->data_len = 0;
++      return false;
++    }
++
++  return true;
++}
++
++/* Parse git binary patch data from the patch file.
++   PFP should be positioned just after the "GIT binary patch\n" line.
++   Returns true on success.  */
++bool
++git_parse_binary_patch (FILE *pfp, struct git_binary_patch *patch)
++{
++  memset (patch, 0, sizeof *patch);
++
++  /* Read the forward hunk.  */
++  if (!read_binary_hunk (pfp, &patch->forward))
++    return false;
++
++  /* Read the reverse hunk.  */
++  if (!read_binary_hunk (pfp, &patch->reverse))
++    {
++      free (patch->forward.data);
++      patch->forward.data = NULL;
++      return false;
++    }
++
++  return true;
++}
++
++/* Read a variable-length size from a delta stream (7 bits per byte,
++   MSB set means more bytes follow).  Returns the size and advances *PP.  */
++static size_t
++read_delta_size (const unsigned char **pp, const unsigned char *end)
++{
++  size_t result = 0;
++  int shift = 0;
++  const unsigned char *p = *pp;
++
++  while (p < end)
++    {
++      unsigned char c = *p++;
++      result |= (size_t)(c & 0x7F) << shift;
++      shift += 7;
++      if (!(c & 0x80))
++        break;
++    }
++
++  *pp = p;
++  return result;
++}
++
++/* Apply a git binary delta.
++   DELTA/DELTA_LEN: the uncompressed delta instruction stream.
++   SRC/SRC_LEN: the original file content.
++   On success, sets *RESULT and *RESULT_LEN, and returns true.
++   Caller must free *RESULT.  */
++bool
++git_apply_delta (const unsigned char *delta, size_t delta_len,
++                 const unsigned char *src, size_t src_len,
++                 unsigned char **result, size_t *result_len)
++{
++  const unsigned char *p = delta;
++  const unsigned char *end = delta + delta_len;
++
++  /* Read source and target sizes from the delta header.  */
++  size_t expected_src_len = read_delta_size (&p, end);
++  size_t target_len = read_delta_size (&p, end);
++
++  if (expected_src_len != src_len)
++    return false;
++
++  unsigned char *out = xmalloc (target_len + 1);
++  size_t out_pos = 0;
++
++  while (p < end)
++    {
++      unsigned char cmd = *p++;
++
++      if (cmd & 0x80)
++        {
++          /* COPY from source.  */
++          size_t offset = 0, size = 0;
++
++          if (cmd & 0x01) { if (p >= end) goto fail; offset  = *p++; }
++          if (cmd & 0x02) { if (p >= end) goto fail; offset |= (size_t)*p++ <<  8; }
++          if (cmd & 0x04) { if (p >= end) goto fail; offset |= (size_t)*p++ << 16; }
++          if (cmd & 0x08) { if (p >= end) goto fail; offset |= (size_t)*p++ << 24; }
++
++          if (cmd & 0x10) { if (p >= end) goto fail; size  = *p++; }
++          if (cmd & 0x20) { if (p >= end) goto fail; size |= (size_t)*p++ <<  8; }
++          if (cmd & 0x40) { if (p >= end) goto fail; size |= (size_t)*p++ << 16; }
++
++          if (size == 0)
++            size = 0x10000;
++
++          if (offset + size > src_len || out_pos + size > target_len)
++            goto fail;
++
++          memcpy (out + out_pos, src + offset, size);
++          out_pos += size;
++        }
++      else if (cmd > 0)
++        {
++          /* ADD literal data.  */
++          size_t size = cmd;
++          if (p + size > end || out_pos + size > target_len)
++            goto fail;
++          memcpy (out + out_pos, p, size);
++          out_pos += size;
++          p += size;
++        }
++      else
++        {
++          /* cmd == 0 is reserved/invalid.  */
++          goto fail;
++        }
++    }
++
++  if (out_pos != target_len)
++    goto fail;
++
++  *result = out;
++  *result_len = target_len;
++  return true;
++
++fail:
++  free (out);
++  *result = NULL;
++  *result_len = 0;
++  return false;
++}
++
++/* Apply a parsed git binary patch.
++   INPUT_NAME: name of source file (NULL if file doesn't exist / new file).
++   OUTFD: file descriptor for the output file (already created by make_tempfile).
++   PATCH: the parsed binary patch.
++   REV: true to apply in reverse.
++   Returns true on success.  */
++bool
++git_apply_binary_patch (const char *input_name,
++                        int outfd,
++                        const struct git_binary_patch *patch,
++                        bool rev)
++{
++  const struct git_binary_hunk *hunk = rev ? &patch->reverse : &patch->forward;
++
++  /* Read the source file (if any).  */
++  unsigned char *src = NULL;
++  size_t src_len = 0;
++
++  if (input_name)
++    {
++      int fd = safe_open ((char *) input_name, O_RDONLY | O_BINARY, 0);
++      if (fd >= 0)
++        {
++          struct stat st;
++          if (fstat (fd, &st) == 0 && S_ISREG (st.st_mode) && st.st_size > 0)
++            {
++              src_len = st.st_size;
++              src = xmalloc (src_len);
++              size_t total = 0;
++              while (total < src_len)
++                {
++                  ssize_t n = read (fd, src + total, src_len - total);
++                  if (n <= 0)
++                    {
++                      free (src);
++                      close (fd);
++                      return false;
++                    }
++                  total += n;
++                }
++            }
++          close (fd);
++        }
++    }
++
++  /* Produce the result.  */
++  unsigned char *result = NULL;
++  size_t result_len = 0;
++
++  if (hunk->type == GIT_BINARY_LITERAL)
++    {
++      /* Literal: the data IS the result.  */
++      result = xmalloc (hunk->data_len + 1);
++      memcpy (result, hunk->data, hunk->data_len);
++      result_len = hunk->data_len;
++    }
++  else if (hunk->type == GIT_BINARY_DELTA)
++    {
++      if (!git_apply_delta (hunk->data, hunk->data_len,
++                            src, src_len,
++                            &result, &result_len))
++        {
++          free (src);
++          say ("git binary delta application failed\n");
++          return false;
++        }
++    }
++
++  free (src);
++
++  /* Write the result file.  */
++  if (dry_run)
++    {
++      free (result);
++      return true;
++    }
++
++  /* Truncate and write to the output fd.  */
++  if (ftruncate (outfd, 0) < 0 || lseek (outfd, 0, SEEK_SET) < 0)
++    {
++      free (result);
++      return false;
++    }
++
++  if (result_len > 0)
++    {
++      size_t written = 0;
++      while (written < result_len)
++        {
++          ssize_t n = write (outfd, result + written, result_len - written);
++          if (n < 0)
++            {
++              free (result);
++              return false;
++            }
++          written += n;
++        }
++    }
++
++  free (result);
++  return true;
++}
++
++/* Free data inside a git_binary_patch struct.  */
++void
++git_binary_patch_free (struct git_binary_patch *patch)
++{
++  free (patch->forward.data);
++  patch->forward.data = NULL;
++  free (patch->reverse.data);
++  patch->reverse.data = NULL;
++}
+diff --git a/src/gitpatch.h b/src/gitpatch.h
+new file mode 100644
+index 0000000..10049e2
+--- /dev/null
++++ b/src/gitpatch.h
+@@ -0,0 +1,80 @@
++/* git binary patch support for GNU patch */
++
++/* Copyright 2026 Free Software Foundation, Inc.
++
++   This program is free software: you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation, either version 3 of the License, or
++   (at your option) any later version.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
++
++#ifndef GITPATCH_H
++#define GITPATCH_H
++
++#include <stddef.h>
++#include <stdbool.h>
++
++/* Type of git binary patch hunk.  */
++enum git_binary_type {
++  GIT_BINARY_LITERAL,
++  GIT_BINARY_DELTA
++};
++
++/* A parsed git binary patch hunk (one direction).  */
++struct git_binary_hunk {
++  enum git_binary_type type;
++  size_t result_size;      /* For literal: uncompressed data size.
++                              For delta: uncompressed delta size.  */
++  unsigned char *data;     /* The decoded (base85-decoded, zlib-inflated) data.  */
++  size_t data_len;         /* Length of decoded data.  */
++};
++
++/* A complete git binary patch (forward + reverse).  */
++struct git_binary_patch {
++  struct git_binary_hunk forward;
++  struct git_binary_hunk reverse;
++};
++
++/* Decode a base85 line.  DST must have room for LEN bytes.
++   LINE is the base85-encoded data (without the length character).
++   LINE_LEN is the number of base85 characters.
++   Returns true on success, false on error.  */
++bool git_base85_decode (unsigned char *dst, size_t len,
++                        const char *line, size_t line_len);
++
++/* Apply a git binary delta to a source buffer, producing a result buffer.
++   DELTA and DELTA_LEN describe the uncompressed delta data.
++   SRC and SRC_LEN describe the original file content.
++   On success, sets *RESULT and *RESULT_LEN and returns true.
++   Caller must free *RESULT.  */
++bool git_apply_delta (const unsigned char *delta, size_t delta_len,
++                      const unsigned char *src, size_t src_len,
++                      unsigned char **result, size_t *result_len);
++
++/* Parse git binary patch data from the patch file.
++   PFP is the patch file, positioned just after the "GIT binary patch" line.
++   On success, fills in PATCH and returns true.
++   Caller must free forward.data and reverse.data.  */
++bool git_parse_binary_patch (FILE *pfp, struct git_binary_patch *patch);
++
++/* Apply a git binary patch.  INPUT_NAME is the source file (may be null if
++   creating a new file).  OUTFD is the file descriptor for the output file
++   (already opened for writing).
++   PATCH is the parsed binary patch.  REV is true for reverse application.
++   Returns true on success.  */
++bool git_apply_binary_patch (const char *input_name,
++                             int outfd,
++                             const struct git_binary_patch *patch,
++                             bool rev);
++
++/* Free data inside a git_binary_patch struct.  */
++void git_binary_patch_free (struct git_binary_patch *patch);
++
++#endif /* GITPATCH_H */
+diff --git a/src/patch.c b/src/patch.c
+index 0985af0..058721c 100644
+--- a/src/patch.c
++++ b/src/patch.c
+@@ -29,6 +29,7 @@
+ #include <xalloc.h>
+ #include <xstdopen.h>
+ #include <safe.h>
++#include <gitpatch.h>
+ 
+ #ifndef __has_feature
+ # define __has_feature(a) false
+@@ -376,10 +377,53 @@ main (int argc, char **argv)
+ 	bool apply_anyway = merge;  /* don't try to reverse when merging */
+ 
+ 	if (! skip_rest_of_patch && diff_type == GIT_BINARY_DIFF) {
+-	  say ("File %s: git binary diffs are not supported.\n",
+-	       quotearg (outname));
+-	  skip_rest_of_patch = true;
+-	  somefailed = true;
++	  struct git_binary_patch binpatch;
++	  if (! pch_git_binary_patch (&binpatch))
++	    {
++	      say ("File %s: malformed git binary diff.\n",
++		   quotearg (outname));
++	      skip_rest_of_patch = true;
++	      somefailed = true;
++	    }
++	  else
++	    {
++	      if (verbosity != SILENT)
++		{
++		  bool renamed = (inname && outname
++				  && strcmp (inname, outname) != 0);
++		  bool skip_rename = (inname && outname
++				      && !strcmp (inname, outname)
++				      && pch_rename ());
++		  say ("%s file %s",
++		       dry_run ? "checking" : "patching",
++		       quotearg (outname));
++		  if (renamed || skip_rename)
++		    say (" (%s%s from %s)",
++			 skip_rename ? "already " : "",
++			 pch_copy () ? "copied" :
++			 (pch_rename () ? "renamed" : "read"),
++			 !skip_rename ? inname
++			 : pch_name (!strcmp (inname, pch_name (OLD))));
++		  say (" (binary)\n");
++		}
++	      if (! git_apply_binary_patch (inname, outfd, &binpatch,
++					    reverse_flag))
++		{
++		  say ("File %s: git binary patch application failed.\n",
++		       quotearg (outname));
++		  somefailed = true;
++		  skip_rest_of_patch = true;
++		}
++	      else if (! dry_run)
++		{
++		  if (fstat (outfd, &tmpoutst) != 0)
++		    pfatal ("%s", tmpout.name);
++		  outstate.zero_output = tmpoutst.st_size == 0;
++		}
++	      git_binary_patch_free (&binpatch);
++	      /* Skip the normal hunk loop for binary diffs.  */
++	      goto binary_skip_hunks;
++	    }
+ 	}
+ 	/* initialize the patched file */
+ 	if (! skip_rest_of_patch && ! outfile)
+@@ -530,6 +574,8 @@ main (int argc, char **argv)
+ 		skip_rest_of_patch = true;
+ 	      }
+ 	  }
++
++      binary_skip_hunks:;
+       }
+ 
+       /* and put the output where desired */
+@@ -569,7 +615,8 @@ main (int argc, char **argv)
+ 		  bool set_mode = new_mode && old_mode != new_mode;
+ 
+ 		  /* Avoid replacing files when nothing has changed.  */
+-		  if (failed < hunk || diff_type == ED_DIFF || set_mode
++		  if (failed < hunk || diff_type == ED_DIFF
++		      || diff_type == GIT_BINARY_DIFF || set_mode
+ 		      || pch_copy () || pch_rename ())
+ 		    {
+ 		      enum file_attributes attr = 0;
+diff --git a/src/pch.c b/src/pch.c
+index 6274b65..e2aed5a 100644
+--- a/src/pch.c
++++ b/src/pch.c
+@@ -24,6 +24,7 @@
+ #include <util.h>
+ #include <xalloc.h>
+ #include <pch.h>
++#include <gitpatch.h>
+ #if HAVE_SETMODE_DOS
+ # include <io.h>
+ #endif
+@@ -2474,3 +2475,28 @@ pch_normalize (enum diff format)
+ 	}
+     }
+ }
++
++/* Parse a git binary patch from the current position in the patch file.
++   The patch file should be positioned at the "GIT binary patch" line
++   (via skip_to in there_is_another_patch).
++   On success, fills PATCH and advances past all binary data, returning true.
++   On failure, returns false.  */
++bool
++pch_git_binary_patch (struct git_binary_patch *patch)
++{
++  /* We are positioned right after skip_to, at p_start.
++     Read and skip the "GIT binary patch" header line.  */
++  idx_t chars_read = get_line (true);
++  if (chars_read < 16 || strncmp (patchbuf, "GIT binary patch", 16) != 0)
++    return false;
++
++  /* Parse the binary data (forward + reverse hunks).  */
++  if (!git_parse_binary_patch (pfp, patch))
++    return false;
++
++  /* Record position so intuit knows where the next patch starts.  */
++  off_t pos = Ftello (pfp);
++  next_intuit_at (pos, p_input_line + 1);
++
++  return true;
++}
+diff --git a/src/pch.h b/src/pch.h
+index 904fbac..4d1160a 100644
+--- a/src/pch.h
++++ b/src/pch.h
+@@ -53,4 +53,7 @@ void open_patch_file (char const *);
+ void re_patch (void);
+ void pch_normalize (enum diff);
+ 
++struct git_binary_patch;
++bool pch_git_binary_patch (struct git_binary_patch *patch);
++
+ extern struct timespec p_timestamp[2];  /* timestamps in patch headers */
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index bd38032..531393d 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -40,6 +40,7 @@ TESTS = \
+ 	filename-choice \
+ 	git-binary-diff \
+ 	git-cleanup \
++	git-interop \
+ 	garbage \
+ 	global-reject-files \
+ 	hardlinks \
+diff --git a/tests/git-binary-diff b/tests/git-binary-diff
+index 9c1af24..6f7bbd6 100644
+--- a/tests/git-binary-diff
++++ b/tests/git-binary-diff
+@@ -4,26 +4,155 @@
+ # in any medium, are permitted without royalty provided the copyright
+ # notice and this notice are preserved.
+ 
++# Tests for git binary diff support (literal and delta patches)
++
+ . $srcdir/test-lib.sh
+ 
+ require cat
+ use_local_patch
+ use_tmpdir
+ 
+-cat > f.diff <<EOF
+-diff --git a/zeroes b/zeroes
+-new file mode 100644
+-index 0000000000000000000000000000000000000000..06d7405020018ddf3cacee90fd4af10487da3d20
+-GIT binary patch
+-literal 1024
+-ScmZQz7zLvtFd70QH3R?z00031
++# We need git to generate binary patches for interop tests.
++require git
++
++# ==============================================================
++# Generate test patches using git, which ensures they are correct.
++
++mkdir -p repo && cd repo
++git init -q
++git config user.email "test@test.com"
++git config user.name "Test"
++git commit --allow-empty -q -m "init"
++
++# Create a binary file (1024 zeroes)
++dd if=/dev/zero of=binfile bs=1024 count=1 2>/dev/null
++git add binfile
++git commit -q -m "add binfile"
++git diff --binary HEAD~1 HEAD -- binfile > ../create.diff
++
++# Modify the binary file: change first byte to 0x42
++printf '\x42' | dd of=binfile bs=1 count=1 conv=notrunc 2>/dev/null
++git add binfile
++git commit -q -m "modify binfile"
++git diff --binary HEAD~1 HEAD -- binfile > ../modify.diff
++
++# Delete the binary file
++git rm -q binfile
++git commit -q -m "delete binfile"
++git diff --binary HEAD~1 HEAD -- binfile > ../delete.diff
++
++cd ..
++rm -rf repo
++
++# ==============================================================
++# Test 1: Create a binary file via literal patch
++
++check 'patch -p1 < create.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
++EOF
++
++check 'wc -c < binfile' <<EOF
++1024
++EOF
++
++# Verify content is all zeroes (compare with a generated file)
++check 'dd if=/dev/zero of=expected_zeroes bs=1024 count=1 2>/dev/null && cmp binfile expected_zeroes && echo "match" && rm -f expected_zeroes' <<EOF
++match
++EOF
++
++# ==============================================================
++# Test 2: Reverse binary creation (delete file)
++
++check 'patch -R -p1 < create.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
++EOF
++
++ncheck 'test ! -e binfile'
++
++# ==============================================================
++# Test 3: Modify binary file (may use delta or literal)
++
++# Recreate the original
++patch -p1 < create.diff >/dev/null 2>&1
++
++check 'patch -p1 < modify.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
++EOF
++
++check 'wc -c < binfile' <<EOF
++1024
++EOF
++
++# First byte should be 0x42 (66 decimal)
++check 'od -A n -N 1 -t d1 binfile | tr -d " "' <<EOF
++66
++EOF
+ 
+-literal 0
+-HcmV?d00001
++# ==============================================================
++# Test 4: Reverse a binary modification
+ 
++check 'patch -R -p1 < modify.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
+ EOF
+ 
+-check 'patch -p1 < f.diff || echo "Status: $?"' <<EOF
+-File zeroes: git binary diffs are not supported.
+-Status: 1
++# First byte should be back to zero
++check 'od -A n -N 1 -t d1 binfile | tr -d " "' <<EOF
++0
+ EOF
++
++# ==============================================================
++# Test 5: Delete a binary file
++
++# First apply the modify so we have the modified file
++patch -p1 < modify.diff >/dev/null 2>&1
++
++check 'patch -p1 < delete.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
++EOF
++
++ncheck 'test ! -e binfile'
++
++# ==============================================================
++# Test 6: Reverse binary deletion (recreate file)
++
++check 'patch -R -p1 < delete.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
++EOF
++
++check 'test -f binfile && echo "exists"' <<EOF
++exists
++EOF
++
++check 'wc -c < binfile' <<EOF
++1024
++EOF
++
++# ==============================================================
++# Test 7: Dry run should not modify files
++
++check 'patch --dry-run -p1 < delete.diff || echo "Status: $?"' <<EOF
++checking file binfile (binary)
++EOF
++
++check 'test -f binfile && echo "exists"' <<EOF
++exists
++EOF
++
++# ==============================================================
++# Test 8: Concatenated binary diffs
++
++rm -f binfile
++
++cat create.diff modify.diff > concat.diff
++
++check 'patch -p1 < concat.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
++patching file binfile (binary)
++EOF
++
++# Should have the modified content (first byte = 0x42)
++check 'od -A n -N 1 -t d1 binfile | tr -d " "' <<EOF
++66
++EOF
++
++rm -f binfile
+diff --git a/tests/git-interop b/tests/git-interop
+new file mode 100644
+index 0000000..0d69a0b
+--- /dev/null
++++ b/tests/git-interop
+@@ -0,0 +1,481 @@
++# Copyright 2026 Free Software Foundation, Inc.
++#
++# Copying and distribution of this file, with or without modification,
++# in any medium, are permitted without royalty provided the copyright
++# notice and this notice are preserved.
++
++# Comprehensive interoperability tests with git:
++# - Binary diffs (literal and delta) generated by git
++# - Rename patches (with and without content changes)
++# - Copy patches (with and without content changes)
++# - Combinations: binary rename/copy, mixed text+binary, concatenated
++
++. $srcdir/test-lib.sh
++
++require cat
++require git
++use_local_patch
++use_tmpdir
++
++# ==============================================================
++# Helper to create a git repo with various binary content
++
++setup_git_repo() {
++    rm -rf repo work
++    mkdir repo work
++    cd repo
++    git init -q
++    git config user.email "test@test.com"
++    git config user.name "Test"
++}
++
++# ==============================================================
++# PART 1: Git binary diff round-trip tests
++# ==============================================================
++
++setup_git_repo
++
++# Create a 200-byte binary file with recognizable pattern
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(200)))
++" > bindata
++git add bindata
++git commit -q -m "add bindata"
++
++# Modify a few bytes
++python3 -c "
++import sys
++d = bytearray(range(200))
++d[50] = 0xAA
++d[100] = 0xBB
++d[150] = 0xCC
++sys.stdout.buffer.write(bytes(d))
++" > bindata
++git add bindata
++git commit -q -m "modify bindata"
++
++git diff --binary HEAD~1 HEAD > ../modify-bindata.diff
++cd ..
++
++# Apply the patch using our patch tool and verify round-trip
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(200)))
++" > work/bindata
++
++check 'cd work && patch -p1 < ../modify-bindata.diff || echo "Status: $?"' <<EOF
++patching file bindata (binary)
++EOF
++
++# Verify the content matches what git produced
++check 'python3 -c "
++import sys
++with open(\"work/bindata\", \"rb\") as f:
++    d = f.read()
++expected = bytearray(range(200))
++expected[50] = 0xAA
++expected[100] = 0xBB
++expected[150] = 0xCC
++if d == bytes(expected):
++    print(\"match\")
++else:
++    print(\"mismatch\")
++    for i in range(200):
++        if d[i] != expected[i]:
++            sys.stderr.write(\"byte %d: got %02x expected %02x\n\" % (i, d[i], expected[i]))
++"' <<EOF
++match
++EOF
++
++# Reverse the patch
++check 'cd work && patch -R -p1 < ../modify-bindata.diff || echo "Status: $?"' <<EOF
++patching file bindata (binary)
++EOF
++
++check 'python3 -c "
++with open(\"work/bindata\", \"rb\") as f:
++    d = f.read()
++if d == bytes(range(200)):
++    print(\"match\")
++else:
++    print(\"mismatch\")
++"' <<EOF
++match
++EOF
++
++# ==============================================================
++# PART 2: Git rename with text changes (similar enough for -M)
++# ==============================================================
++
++setup_git_repo
++
++printf "line1\nline2\nline3\nline4\nline5\n" > textfile
++git add textfile
++git commit -q -m "add textfile"
++
++git mv textfile renamed
++printf "line1\nline2\nmodified\nline4\nline5\n" > renamed
++git add renamed
++git commit -q -m "rename and modify"
++
++git diff --binary -M HEAD~1 HEAD > ../rename-text.diff
++cd ..
++
++printf "line1\nline2\nline3\nline4\nline5\n" > work/textfile
++
++check 'cd work && patch -p1 < ../rename-text.diff || echo "Status: $?"' <<EOF
++patching file renamed (renamed from textfile)
++EOF
++
++ncheck 'test ! -e work/textfile'
++
++check 'cat work/renamed' <<EOF
++line1
++line2
++modified
++line4
++line5
++EOF
++
++# ==============================================================
++# PART 3: Git copy with text changes (similar enough for -C)
++# ==============================================================
++
++setup_git_repo
++
++printf "line1\nline2\nline3\nline4\nline5\n" > original
++git add original
++git commit -q -m "add original"
++
++cp original copied
++printf "line1\nline2\nchanged\nline4\nline5\n" > copied
++git add copied
++git commit -q -m "copy and modify"
++
++git diff --binary -C -C HEAD~1 HEAD > ../copy-text.diff
++cd ..
++
++printf "line1\nline2\nline3\nline4\nline5\n" > work/original
++
++check 'cd work && patch -p1 < ../copy-text.diff || echo "Status: $?"' <<EOF
++patching file copied (copied from original)
++EOF
++
++# Original should be unchanged
++check 'cat work/original' <<EOF
++line1
++line2
++line3
++line4
++line5
++EOF
++
++check 'cat work/copied' <<EOF
++line1
++line2
++changed
++line4
++line5
++EOF
++
++# ==============================================================
++# PART 4: Git rename of binary file (no content change)
++# ==============================================================
++
++setup_git_repo
++
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(100)))
++" > binaryold
++git add binaryold
++git commit -q -m "add binaryold"
++
++git mv binaryold binarynew
++git commit -q -m "rename binary"
++
++git diff --binary -M HEAD~1 HEAD > ../rename-binary.diff
++cd ..
++
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(100)))
++" > work/binaryold
++
++check 'cd work && patch -p1 < ../rename-binary.diff || echo "Status: $?"' <<EOF
++patching file binarynew (renamed from binaryold)
++EOF
++
++ncheck 'test ! -e work/binaryold'
++
++check 'python3 -c "
++with open(\"work/binarynew\", \"rb\") as f:
++    d = f.read()
++if d == bytes(range(100)):
++    print(\"match\")
++else:
++    print(\"mismatch\")
++"' <<EOF
++match
++EOF
++
++# ==============================================================
++# PART 5: Git rename of binary file WITH content changes
++# ==============================================================
++
++setup_git_repo
++
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(100)))
++" > binaryold
++git add binaryold
++git commit -q -m "add binaryold"
++
++git mv binaryold binarynew
++python3 -c "
++import sys
++d = bytearray(range(100))
++d[0] = 0xFF
++sys.stdout.buffer.write(bytes(d))
++" > binarynew
++git add binarynew
++git commit -q -m "rename and modify binary"
++
++git diff --binary -M HEAD~1 HEAD > ../rename-modify-binary.diff
++cd ..
++
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(100)))
++" > work/binaryold
++rm -f work/binarynew
++
++check 'cd work && patch -p1 < ../rename-modify-binary.diff || echo "Status: $?"' <<EOF
++patching file binarynew (renamed from binaryold) (binary)
++EOF
++
++ncheck 'test ! -e work/binaryold'
++
++check 'python3 -c "
++with open(\"work/binarynew\", \"rb\") as f:
++    d = f.read()
++expected = bytearray(range(100))
++expected[0] = 0xFF
++if d == bytes(expected):
++    print(\"match\")
++else:
++    print(\"mismatch\")
++"' <<EOF
++match
++EOF
++
++# ==============================================================
++# PART 5b: Git copy of binary file WITH content changes
++# ==============================================================
++
++setup_git_repo
++
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(100)))
++" > binaryorig
++git add binaryorig
++git commit -q -m "add binaryorig"
++
++cp binaryorig binarycopy
++python3 -c "
++import sys
++d = bytearray(range(100))
++d[0] = 0xFF
++sys.stdout.buffer.write(bytes(d))
++" > binarycopy
++git add binarycopy
++git commit -q -m "copy and modify binary"
++
++git diff --binary -C -C HEAD~1 HEAD > ../copy-modify-binary.diff
++cd ..
++
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(100)))
++" > work/binaryorig
++rm -f work/binarycopy
++
++check 'cd work && patch -p1 < ../copy-modify-binary.diff || echo "Status: $?"' <<EOF
++patching file binarycopy (copied from binaryorig) (binary)
++EOF
++
++# Original should still exist
++check 'test -f work/binaryorig && echo "exists"' <<EOF
++exists
++EOF
++
++check 'python3 -c "
++with open(\"work/binarycopy\", \"rb\") as f:
++    d = f.read()
++expected = bytearray(range(100))
++expected[0] = 0xFF
++if d == bytes(expected):
++    print(\"match\")
++else:
++    print(\"mismatch\")
++"' <<EOF
++match
++EOF
++
++# ==============================================================
++# PART 6: Larger binary file test (ensures multi-line base85)
++# ==============================================================
++
++setup_git_repo
++
++python3 -c "
++import sys
++# Create a 4096-byte binary blob with null bytes to force binary detection
++data = bytearray(range(256)) * 16  # 4096 bytes, contains null bytes
++sys.stdout.buffer.write(bytes(data))
++" > largebin
++git add largebin
++git commit -q -m "add largebin"
++
++python3 -c "
++import sys
++data = bytearray(range(256)) * 16
++data[0] = 0x42
++data[2048] = 0x43
++sys.stdout.buffer.write(bytes(data))
++" > largebin
++git add largebin
++git commit -q -m "modify largebin"
++
++git diff --binary HEAD~1 HEAD > ../modify-large.diff
++cd ..
++
++python3 -c "
++import sys
++data = bytearray(range(256)) * 16
++sys.stdout.buffer.write(bytes(data))
++" > work/largebin
++
++check 'cd work && patch -p1 < ../modify-large.diff || echo "Status: $?"' <<EOF
++patching file largebin (binary)
++EOF
++
++check 'python3 -c "
++import sys
++with open(\"work/largebin\", \"rb\") as f:
++    d = bytearray(f.read())
++expected = bytearray(range(256)) * 16
++expected[0] = 0x42
++expected[2048] = 0x43
++if d == bytes(expected):
++    print(\"match\")
++else:
++    print(\"mismatch\")
++"' <<EOF
++match
++EOF
++
++# ==============================================================
++# PART 7: Mixed text and binary patches in one diff
++# ==============================================================
++
++setup_git_repo
++git commit --allow-empty -q -m "init"
++
++echo "text content" > textfile
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(50)))
++" > binfile
++git add textfile binfile
++git commit -q -m "add files"
++
++echo "modified text" > textfile
++python3 -c "
++import sys
++d = bytearray(range(50))
++d[25] = 0xFF
++sys.stdout.buffer.write(bytes(d))
++" > binfile
++git add textfile binfile
++git commit -q -m "modify both"
++
++git diff --binary HEAD~1 HEAD > ../mixed.diff
++cd ..
++
++echo "text content" > work/textfile
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(50)))
++" > work/binfile
++
++check 'cd work && patch -p1 < ../mixed.diff || echo "Status: $?"' <<EOF
++patching file binfile (binary)
++patching file textfile
++EOF
++
++check 'cat work/textfile' <<EOF
++modified text
++EOF
++
++check 'python3 -c "
++with open(\"work/binfile\", \"rb\") as f:
++    d = bytearray(f.read())
++expected = bytearray(range(50))
++expected[25] = 0xFF
++if d == expected:
++    print(\"match\")
++else:
++    print(\"mismatch\")
++"' <<EOF
++match
++EOF
++
++# ==============================================================
++# PART 8: Verify git apply and GNU patch produce same results
++# ==============================================================
++
++setup_git_repo
++
++python3 -c "
++import sys
++sys.stdout.buffer.write(bytes(range(200)))
++" > bindata
++git add bindata
++git commit -q -m "add bindata"
++
++python3 -c "
++import sys
++d = bytearray(range(200))
++d[10] = 0xDE
++d[20] = 0xAD
++d[30] = 0xBE
++d[40] = 0xEF
++sys.stdout.buffer.write(bytes(d))
++" > bindata
++git add bindata
++git commit -q -m "modify bindata"
++
++git diff --binary HEAD~1 HEAD > ../interop.diff
++
++# Apply with git apply
++git checkout HEAD~1 -- bindata 2>/dev/null
++cp bindata ../git_original
++git apply ../interop.diff
++cp bindata ../git_result
++
++cd ..
++
++# Apply with GNU patch
++cp git_original work/bindata
++cd work && patch -p1 < ../interop.diff >/dev/null 2>&1
++cd ..
++
++check 'cmp work/bindata git_result && echo "identical"' <<EOF
++identical
++EOF
++
++rm -rf repo work *.diff git_original git_result
+\ No newline at end of file
