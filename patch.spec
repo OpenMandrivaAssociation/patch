@@ -8,6 +8,9 @@ Url:		https://www.gnu.org/directory/GNU/patch.html
 Source0:	https://ftp.gnu.org/pub/gnu/patch/%{name}-%{version}.tar.xz
 BuildSystem:	autotools
 BuildRequires:	attr-devel
+BuildRequires:	autoconf
+BuildRequires:	automake
+BuildRequires:	pkgconfig(zlib)
 
 %patchlist
 patch-gitbinary.patch
